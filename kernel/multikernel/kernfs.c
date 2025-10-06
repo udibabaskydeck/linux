@@ -27,6 +27,7 @@
 #include <linux/multikernel.h>
 #include <linux/libfdt.h>
 #include <linux/sizes.h>
+#include "internal.h"
 
 #define MULTIKERNEL_MAGIC	0x6d6b6673	/* "mkfs" */
 
@@ -128,7 +129,110 @@ static int status_seq_show(struct seq_file *sf, void *v)
 /* Root-level device_tree attribute - handles full multikernel DTB upload */
 static int root_device_tree_seq_show(struct seq_file *sf, void *v)
 {
-	seq_printf(sf, "Write multikernel device tree here to propagate to instances\n");
+	if (root_instance->dtb_data) {
+		const void *fdt = root_instance->dtb_data;
+		int ret = fdt_check_header(fdt);
+		if (ret) {
+			seq_printf(sf, "/* Invalid device tree blob in root_instance: %d */\n", ret);
+			return 0;
+		}
+
+		int instances_node = fdt_path_offset(fdt, "/instances");
+		if (instances_node < 0) {
+			seq_printf(sf, "/* No instances node found */\n");
+			return 0;
+		}
+
+		/* Find the first (and should be only) instance in this DTB */
+		int instance_node = fdt_first_subnode(fdt, instances_node);
+		if (instance_node < 0) {
+			seq_printf(sf, "/* No instance found */\n");
+			return 0;
+		}
+
+		const char *instance_name = fdt_get_name(fdt, instance_node, NULL);
+		if (!instance_name) {
+			seq_printf(sf, "/* Invalid instance name */\n");
+			return 0;
+		}
+
+		/* Show the DTB with instance as root node */
+		seq_printf(sf, "/dts-v1/;\n\n");
+		seq_printf(sf, "/%s {\n", instance_name);
+		seq_printf(sf, "\tcompatible = \"multikernel-v1\";\n");
+
+		/* Display instance properties */
+		int prop_offset = fdt_first_property_offset(fdt, instance_node);
+		while (prop_offset >= 0) {
+			const struct fdt_property *prop = fdt_get_property_by_offset(fdt, prop_offset, NULL);
+			if (prop) {
+				const char *prop_name = fdt_string(fdt, fdt32_to_cpu(prop->nameoff));
+				int prop_len = fdt32_to_cpu(prop->len);
+
+				if (prop_len == 4) {
+					/* Assume it's a u32 */
+					u32 val = fdt32_to_cpu(*(const fdt32_t *)prop->data);
+					seq_printf(sf, "\t%s = <%u>;\n", prop_name, val);
+				} else {
+					/* For other types, show as hex */
+					seq_printf(sf, "\t%s = [", prop_name);
+					const u8 *data = (const u8 *)prop->data;
+					for (int i = 0; i < prop_len; i++) {
+						seq_printf(sf, "%02x", data[i]);
+						if (i < prop_len - 1) seq_printf(sf, " ");
+					}
+					seq_printf(sf, "];\n");
+				}
+			}
+			prop_offset = fdt_next_property_offset(fdt, prop_offset);
+		}
+
+		/* Display subnodes (like resources) */
+		int subnode;
+		fdt_for_each_subnode(subnode, fdt, instance_node) {
+			const char *subnode_name = fdt_get_name(fdt, subnode, NULL);
+			if (subnode_name) {
+				seq_printf(sf, "\t%s {\n", subnode_name);
+
+				/* Display subnode properties */
+				prop_offset = fdt_first_property_offset(fdt, subnode);
+				while (prop_offset >= 0) {
+					const struct fdt_property *prop = fdt_get_property_by_offset(fdt, prop_offset, NULL);
+					if (prop) {
+						const char *prop_name = fdt_string(fdt, fdt32_to_cpu(prop->nameoff));
+						int prop_len = fdt32_to_cpu(prop->len);
+
+						if (prop_len == 4) {
+							/* Assume it's a u32 */
+							u32 val = fdt32_to_cpu(*(const fdt32_t *)prop->data);
+							if (strcmp(prop_name, "memory-bytes") == 0) {
+								seq_printf(sf, "\t\t%s = <0x%x>; // %u MB\n",
+									   prop_name, val, val >> 20);
+							} else {
+								seq_printf(sf, "\t\t%s = <%u>;\n", prop_name, val);
+							}
+						} else {
+							/* For other types, show as hex */
+							seq_printf(sf, "\t\t%s = [", prop_name);
+							const u8 *data = (const u8 *)prop->data;
+							for (int i = 0; i < prop_len; i++) {
+								seq_printf(sf, "%02x", data[i]);
+								if (i < prop_len - 1) seq_printf(sf, " ");
+							}
+							seq_printf(sf, "];\n");
+						}
+					}
+					prop_offset = fdt_next_property_offset(fdt, prop_offset);
+				}
+
+				seq_printf(sf, "\t};\n");
+			}
+		}
+
+		seq_printf(sf, "};\n");
+	} else {
+		seq_printf(sf, "Write multikernel device tree here to propagate to instances\n");
+	}
 	return 0;
 }
 
