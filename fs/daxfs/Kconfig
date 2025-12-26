@@ -1,0 +1,13 @@
+config DAXFS
+	tristate "DAX-based filesystem for shared memory"
+	depends on MULTIKERNEL
+	help
+	  A simple read-only filesystem stored in shared physical memory,
+	  designed for fast container rootfs sharing between multikernel
+	  instances.
+
+	  The host kernel creates a daxfs image using mkdaxfs and writes
+	  it to shared memory. The spawn kernel mounts it directly from
+	  the physical memory region.
+
+	  If unsure, say N.
